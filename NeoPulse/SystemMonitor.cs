@@ -4,9 +4,9 @@ using System.Runtime.InteropServices;
 using System.Management;
 using LibreHardwareMonitor.Hardware;
 
-namespace TaskbarMonitor;
+namespace NeoPulse;
 
-public sealed class SystemMonitor : IDisposable
+public sealed partial class SystemMonitor : IDisposable
 {
     private PerformanceCounter? _cpuCounter;
     private readonly List<PerformanceCounter> _gpuCounters = [];
@@ -14,8 +14,12 @@ public sealed class SystemMonitor : IDisposable
     private long _lastBytesReceived;
     private DateTime _lastNetworkCheck = DateTime.Now;
     private bool _disposed;
-    private TaskbarMonitor.Settings.NvmlHelper? _nvml;
     private Computer? _computer;
+
+    // Cached at startup from WMI
+    private string _cpuName = "";
+    private string _gpuName = "";
+    private bool _isWmiSupported;
 
     public double CpuUsage { get; private set; }
     public double GpuUsage { get; private set; }
@@ -27,14 +31,16 @@ public sealed class SystemMonitor : IDisposable
     public double CpuTemp { get; private set; }
     public double GpuTemp { get; private set; }
     public int GpuPowerMw { get; private set; }
+    public int CpuPowerMw { get; private set; }
 
     public SystemMonitor()
     {
-        _nvml = new TaskbarMonitor.Settings.NvmlHelper();
         InitCpu();
         InitGpu();
         InitNetwork();
         InitHardwareMonitor();
+        ProbeWmiSupport();
+        InitWmiHardwareInfo();
     }
 
     private void InitHardwareMonitor()
@@ -49,6 +55,48 @@ public sealed class SystemMonitor : IDisposable
             _computer.Open();
         }
         catch { _computer = null; }
+    }
+
+    private void ProbeWmiSupport()
+    {
+        try
+        {
+            using var searcher = new ManagementObjectSearcher("SELECT Name FROM Win32_Processor");
+            using var results = searcher.Get();
+            _isWmiSupported = results.Count > 0;
+        }
+        catch
+        {
+            _isWmiSupported = false;
+            Logger.Info("WMI probe failed (non-admin or restricted), skipping WMI queries");
+        }
+    }
+
+    private void InitWmiHardwareInfo()
+    {
+        if (!_isWmiSupported) return;
+        // Cache CPU name and TDP at startup
+        try
+        {
+            using var searcher = new ManagementObjectSearcher("SELECT Name, MaxClockSpeed FROM Win32_Processor");
+            foreach (ManagementObject obj in searcher.Get())
+            {
+                _cpuName = Convert.ToString(obj["Name"]) ?? "";
+                break;
+            }
+        }
+        catch { }
+        // Cache GPU name
+        try
+        {
+            using var searcher = new ManagementObjectSearcher("SELECT Name FROM Win32_VideoController WHERE AdapterCompatibility IS NOT NULL");
+            foreach (ManagementObject obj in searcher.Get())
+            {
+                _gpuName = Convert.ToString(obj["Name"]) ?? "";
+                break;
+            }
+        }
+        catch { }
     }
 
     private void InitCpu()
@@ -109,6 +157,7 @@ public sealed class SystemMonitor : IDisposable
         }
         catch { }
 
+        if (!_isWmiSupported) return;
         try
         {
             using var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine");
@@ -137,7 +186,7 @@ public sealed class SystemMonitor : IDisposable
         }
         catch { }
 
-        if (_gpuCounters.Count == 0)
+        if (_gpuCounters.Count == 0 && _isWmiSupported)
         {
             try
             {
@@ -170,12 +219,11 @@ public sealed class SystemMonitor : IDisposable
 
     public void Update()
     {
-        UpdateCpu();
-        UpdateGpu();
-        UpdateMemory();
-        UpdateNetwork();
-        UpdateTemperatures();
-        UpdateGpuPower();
+        try { UpdateCpu(); } catch (Exception ex) { Logger.Warn($"UpdateCpu: {ex.Message}"); }
+        try { UpdateGpu(); } catch (Exception ex) { Logger.Warn($"UpdateGpu: {ex.Message}"); }
+        try { UpdateMemory(); } catch (Exception ex) { Logger.Warn($"UpdateMemory: {ex.Message}"); }
+        try { UpdateNetwork(); } catch (Exception ex) { Logger.Warn($"UpdateNetwork: {ex.Message}"); }
+        try { UpdateHardwareSensors(); } catch (Exception ex) { Logger.Warn($"UpdateHardwareSensors: {ex.Message}"); }
     }
 
     private void UpdateCpu()
@@ -186,11 +234,29 @@ public sealed class SystemMonitor : IDisposable
 
     private void UpdateGpu()
     {
-        // Try NVML first (most reliable for NVIDIA GPUs)
-        if (_nvml != null)
+        // Use LibreHardwareMonitor GPU load sensor
+        if (_computer != null)
         {
-            var (nvmlGpu, _) = _nvml.GetUtilization();
-            if (nvmlGpu > 0) { GpuUsage = nvmlGpu; return; }
+            try
+            {
+                foreach (var hardware in _computer.Hardware)
+                {
+                    if (hardware.HardwareType != HardwareType.GpuNvidia &&
+                        hardware.HardwareType != HardwareType.GpuAmd &&
+                        hardware.HardwareType != HardwareType.GpuIntel)
+                        continue;
+                    hardware.Update();
+                    foreach (var sensor in hardware.Sensors)
+                    {
+                        if (sensor.SensorType == SensorType.Load && sensor.Value.HasValue && sensor.Value.Value > 0)
+                        {
+                            GpuUsage = sensor.Value.Value;
+                            return;
+                        }
+                    }
+                }
+            }
+            catch { }
         }
         // Fallback to PerformanceCounters
         try
@@ -282,10 +348,10 @@ public sealed class SystemMonitor : IDisposable
     {
         return bytesPerSec switch
         {
-            < 1024 => $"{bytesPerSec:F0} B/s",
-            < 1024 * 1024 => $"{bytesPerSec / 1024:F1} KB/s",
-            < 1024 * 1024 * 1024 => $"{bytesPerSec / (1024 * 1024):F1} MB/s",
-            _ => $"{bytesPerSec / (1024 * 1024 * 1024):F2} GB/s"
+            < 1024              => string.Create(8, bytesPerSec, (d, v) => AppendNum(d, v, 0, " B/s")),
+            < 1024 * 1024       => string.Create(12, bytesPerSec / 1024, (d, v) => AppendNum(d, v, 1, " KB/s")),
+            < 1024 * 1024 * 1024 => string.Create(12, bytesPerSec / (1024 * 1024), (d, v) => AppendNum(d, v, 1, " MB/s")),
+            _                   => string.Create(14, bytesPerSec / (1024.0 * 1024 * 1024), (d, v) => AppendNum(d, v, 2, " GB/s")),
         };
     }
 
@@ -293,11 +359,18 @@ public sealed class SystemMonitor : IDisposable
     {
         return bytes switch
         {
-            < 1024UL => $"{bytes} B",
-            < 1024UL * 1024 => $"{bytes / 1024.0:F1} KB",
-            < 1024UL * 1024 * 1024 => $"{bytes / (1024.0 * 1024):F1} MB",
-            _ => $"{bytes / (1024.0 * 1024 * 1024):F1} GB"
+            < 1024UL               => string.Create(6, (double)bytes, (d, v) => AppendNum(d, v, 0, " B")),
+            < 1024UL * 1024        => string.Create(10, bytes / 1024.0, (d, v) => AppendNum(d, v, 1, " KB")),
+            < 1024UL * 1024 * 1024 => string.Create(10, bytes / (1024.0 * 1024), (d, v) => AppendNum(d, v, 1, " MB")),
+            _                      => string.Create(10, bytes / (1024.0 * 1024 * 1024), (d, v) => AppendNum(d, v, 1, " GB")),
         };
+    }
+
+    private static void AppendNum(Span<char> dst, double value, int decimals, string suffix)
+    {
+        string num = decimals == 0 ? ((long)value).ToString() : value.ToString($"F{decimals}");
+        num.AsSpan().CopyTo(dst);
+        suffix.AsSpan().CopyTo(dst.Slice(num.Length));
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -314,164 +387,115 @@ public sealed class SystemMonitor : IDisposable
         public ulong ullAvailExtendedVirtual;
     }
 
-    [DllImport("kernel32.dll")]
+    [LibraryImport("kernel32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+    private static partial bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
 
     public void Dispose()
     {
         if (_disposed) return;
-        _cpuCounter?.Dispose();
-        foreach (var c in _gpuCounters) c.Dispose();
-        _nvml?.Dispose();
+        if (_cpuCounter != null) try { _cpuCounter.Dispose(); } catch { }
+        foreach (var c in _gpuCounters) try { c.Dispose(); } catch { }
         try { _computer?.Close(); } catch { }
         _disposed = true;
     }
 
-    private void UpdateGpuPower()
-    {
-        GpuPowerMw = -1;
-        // NVML power (most accurate for NVIDIA)
-        if (_nvml != null)
-        {
-            int p = _nvml.GetPower();
-            if (p > 0) { GpuPowerMw = p * 1000; return; }
-        }
-        // LibreHardwareMonitor fallback
-        if (_computer != null)
-        {
-            try
-            {
-                foreach (var hardware in _computer.Hardware)
-                {
-                    if (hardware.HardwareType != HardwareType.GpuNvidia &&
-                        hardware.HardwareType != HardwareType.GpuAmd &&
-                        hardware.HardwareType != HardwareType.GpuIntel) continue;
-                    hardware.Update();
-                    foreach (var sensor in hardware.Sensors)
-                    {
-                        if (sensor.SensorType == SensorType.Power && sensor.Value.HasValue)
-                        {
-                            int mw = (int)(sensor.Value.Value * 1000.0);
-                            if (mw > 0 && mw < 500000) { GpuPowerMw = mw; break; }
-                        }
-                    }
-                    if (GpuPowerMw > 0) break;
-                }
-            }
-            catch { }
-        }
-        // LibreHardwareMonitor sub-hardware fallback
-        if (GpuPowerMw < 0 && _computer != null)
-        {
-            try
-            {
-                foreach (var hardware in _computer.Hardware)
-                {
-                    if (hardware.HardwareType != HardwareType.GpuNvidia &&
-                        hardware.HardwareType != HardwareType.GpuAmd &&
-                        hardware.HardwareType != HardwareType.GpuIntel) continue;
-                    foreach (var sub in hardware.SubHardware)
-                    {
-                        sub.Update();
-                        foreach (var sensor in sub.Sensors)
-                        {
-                            if (sensor.SensorType == SensorType.Power && sensor.Value.HasValue)
-                            {
-                                int mw = (int)(sensor.Value.Value * 1000.0);
-                                if (mw > 0 && mw < 500000) { GpuPowerMw = mw; break; }
-                            }
-                        }
-                        if (GpuPowerMw > 0) break;
-                    }
-                    if (GpuPowerMw > 0) break;
-                }
-            }
-            catch { }
-        }
-    }
-
-    private void UpdateTemperatures()
+    private void UpdateHardwareSensors()
     {
         CpuTemp = -1;
         GpuTemp = -1;
+        CpuPowerMw = -1;
+        GpuPowerMw = -1;
 
-        // CPU temperature: Win32_PerfFormattedData_Counters_ThermalZoneInformation (no admin required)
+        if (_computer == null) return;
+
         try
         {
-            using var searcher = new ManagementObjectSearcher("root\\cimv2",
-                "SELECT HighPrecisionTemperature, Temperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation");
-            foreach (ManagementObject obj in searcher.Get())
+            foreach (var hardware in _computer.Hardware)
             {
-                // HighPrecisionTemperature is in tenths of Kelvin
-                if (obj["HighPrecisionTemperature"] != null)
+                hardware.Update();
+                foreach (var sub in hardware.SubHardware) sub.Update();
+
+                var (cpuT, gpuT) = CheckHardwareSensors(hardware, CpuTemp, GpuTemp);
+                if (cpuT > 0) CpuTemp = cpuT;
+                if (gpuT > 0) GpuTemp = gpuT;
+
+                // Power sensors
+                foreach (var sensor in hardware.Sensors)
                 {
-                    double hp = Convert.ToDouble(obj["HighPrecisionTemperature"]);
-                    double celsius = (hp / 10.0) - 273.15;
-                    if (celsius > 0 && celsius < 150) { CpuTemp = celsius; break; }
+                    if (!sensor.Value.HasValue) continue;
+                    if (sensor.SensorType == SensorType.Power && sensor.Value.Value > 0)
+                    {
+                        int mw = (int)(sensor.Value.Value * 1000.0);
+                        if (hardware.HardwareType == HardwareType.Cpu && CpuPowerMw < 0)
+                            CpuPowerMw = mw;
+                        else if ((hardware.HardwareType == HardwareType.GpuNvidia ||
+                                  hardware.HardwareType == HardwareType.GpuAmd ||
+                                  hardware.HardwareType == HardwareType.GpuIntel) && GpuPowerMw < 0 && mw < 500000)
+                            GpuPowerMw = mw;
+                    }
                 }
-                else if (obj["Temperature"] != null)
+                foreach (var sub in hardware.SubHardware)
                 {
-                    double t = Convert.ToDouble(obj["Temperature"]);
-                    double celsius = t - 273.15;
-                    if (celsius > 0 && celsius < 150) { CpuTemp = celsius; break; }
+                    var (c2, g2) = CheckHardwareSensors(sub, CpuTemp, GpuTemp);
+                    if (c2 > 0) CpuTemp = c2;
+                    if (g2 > 0) GpuTemp = g2;
+
+                    foreach (var sensor in sub.Sensors)
+                    {
+                        if (!sensor.Value.HasValue) continue;
+                        if (sensor.SensorType == SensorType.Power && sensor.Value.Value > 0)
+                        {
+                            int mw = (int)(sensor.Value.Value * 1000.0);
+                            if (hardware.HardwareType == HardwareType.Cpu && CpuPowerMw < 0)
+                                CpuPowerMw = mw;
+                            else if ((hardware.HardwareType == HardwareType.GpuNvidia ||
+                                      hardware.HardwareType == HardwareType.GpuAmd ||
+                                      hardware.HardwareType == HardwareType.GpuIntel) && GpuPowerMw < 0 && mw < 500000)
+                                GpuPowerMw = mw;
+                        }
+                    }
                 }
+
+                if (CpuTemp > 0 && GpuTemp > 0 && CpuPowerMw > 0 && GpuPowerMw > 0)
+                    break;
             }
         }
         catch { }
 
-        // GPU temperature: LibreHardwareMonitor (no admin for GPU)
-        if (_computer != null)
+        // WMI fallback for CPU temp and power when not admin
+        if (_isWmiSupported)
         {
-            try
+            if (CpuTemp < 0)
             {
-                foreach (var hardware in _computer.Hardware)
+                try
                 {
-                    if (hardware.HardwareType != HardwareType.GpuNvidia &&
-                        hardware.HardwareType != HardwareType.GpuAmd &&
-                        hardware.HardwareType != HardwareType.GpuIntel)
-                        continue;
-
-                    hardware.Update();
-                    foreach (var sub in hardware.SubHardware)
-                        sub.Update();
-
-                    var (_, g1) = CheckHardwareSensors(hardware, -1, GpuTemp);
-                    GpuTemp = g1;
-
-                    foreach (var sub in hardware.SubHardware)
+                    using var searcher = new ManagementObjectSearcher("SELECT HighPrecisionTemperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation");
+                    foreach (ManagementObject obj in searcher.Get())
                     {
-                        var (_, g2) = CheckHardwareSensors(sub, -1, GpuTemp);
-                        GpuTemp = g2;
+                        var raw = Convert.ToDouble(obj["HighPrecisionTemperature"]);
+                        if (raw > 0) { CpuTemp = raw / 10.0 - 273.15; break; }
                     }
-                    if (GpuTemp > 0) break;
                 }
+                catch { }
             }
-            catch { }
-        }
-
-        // GPU fallback: NVML (NVIDIA)
-        if (GpuTemp < 0 && _nvml != null)
-        {
-            int gpuT = _nvml.GetTemperature();
-            if (gpuT > 0) GpuTemp = gpuT;
-        }
-
-
-        // CPU fallback: WMI thermal zones (requires admin)
-        if (CpuTemp < 0)
-        {
-            try
+            if (CpuPowerMw < 0 && CpuUsage > 0)
             {
-                using var searcher = new ManagementObjectSearcher(@"root\WMI", "SELECT * FROM MSAcpi_ThermalZoneTemperature");
-                foreach (ManagementObject obj in searcher.Get())
+                // Estimate power from CPU usage and TDP
+                try
                 {
-                    var temp = Convert.ToDouble(obj["CurrentTemperature"]);
-                    double celsius = (temp / 10.0) - 273.15;
-                    if (celsius > 0 && celsius < 150) { CpuTemp = celsius; break; }
+                    using var searcher = new ManagementObjectSearcher("SELECT TDP FROM Win32_Processor");
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        var tdp = Convert.ToDouble(obj["TDP"]);
+                        if (tdp > 0) { CpuPowerMw = (int)(tdp * CpuUsage / 100.0 * 1000); break; }
+                    }
                 }
+                catch { }
+                // Fallback: assume 45W TDP
+                if (CpuPowerMw < 0)
+                    CpuPowerMw = (int)(45.0 * CpuUsage / 100.0 * 1000);
             }
-            catch { }
         }
     }
 

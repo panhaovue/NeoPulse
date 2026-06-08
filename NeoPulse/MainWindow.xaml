@@ -1,0 +1,113 @@
+<Window
+    x:Class="NeoPulse.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer Padding="24,16,24,24" VerticalScrollBarVisibility="Auto"
+            IsScrollInertiaEnabled="True">
+        <StackPanel Spacing="4">
+
+            <!-- Display Items -->
+            <TextBlock Text="{Binding LabelDisplayItems}" FontSize="20" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <Grid Margin="0,4,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="48"/><RowDefinition Height="48"/>
+                    <RowDefinition Height="48"/><RowDefinition Height="48"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding LabelNetworkSpeed}" FontSize="15"/>
+                </StackPanel>
+                <ToggleSwitch Grid.Row="0" Grid.Column="1" x:Name="NetworkToggle"
+                              IsOn="{Binding ShowNetwork, Mode=TwoWay}"
+                              IsEnabled="{Binding IsNetworkEnabled}"
+                              OnContent="{Binding LabelOn}" OffContent="{Binding LabelOff}"/>
+
+                <StackPanel Grid.Row="1" Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding LabelCpu}" FontSize="15"/>
+                    <TextBlock Text="{Binding LabelCpuDesc}" FontSize="12" Opacity="0.5" Margin="0,1,0,0"/>
+                </StackPanel>
+                <ToggleSwitch Grid.Row="1" Grid.Column="1" x:Name="CpuToggle"
+                              IsOn="{Binding ShowCpu, Mode=TwoWay}"
+                              IsEnabled="{Binding IsCpuEnabled}"
+                              OnContent="{Binding LabelOn}" OffContent="{Binding LabelOff}"/>
+
+                <StackPanel Grid.Row="2" Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding LabelGpu}" FontSize="15"/>
+                    <TextBlock Text="{Binding LabelGpuDesc}" FontSize="12" Opacity="0.5" Margin="0,1,0,0"/>
+                </StackPanel>
+                <ToggleSwitch Grid.Row="2" Grid.Column="1" x:Name="GpuToggle"
+                              IsOn="{Binding ShowGpu, Mode=TwoWay}"
+                              IsEnabled="{Binding IsGpuEnabled}"
+                              OnContent="{Binding LabelOn}" OffContent="{Binding LabelOff}"/>
+
+                <StackPanel Grid.Row="3" Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding LabelMemory}" FontSize="15"/>
+                </StackPanel>
+                <ToggleSwitch Grid.Row="3" Grid.Column="1" x:Name="MemoryToggle"
+                              IsOn="{Binding ShowMemory, Mode=TwoWay}"
+                              IsEnabled="{Binding IsMemoryEnabled}"
+                              OnContent="{Binding LabelOn}" OffContent="{Binding LabelOff}"/>
+            </Grid>
+
+            <Border Height="1" Background="{ThemeResource CardBackgroundFillColorSecondary}" Margin="0,4"/>
+
+            <!-- Appearance -->
+            <TextBlock Text="{Binding LabelAppearance}" FontSize="20" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <Grid Margin="0,4,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="48"/><RowDefinition Height="48"/>
+                    <RowDefinition Height="48"/><RowDefinition Height="48"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="200"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Text="{Binding LabelTheme}" Grid.Row="0" Grid.Column="0" FontSize="15" VerticalAlignment="Center"/>
+                <ComboBox Grid.Row="0" Grid.Column="1" x:Name="ThemeModeCombo"
+                          SelectedIndex="{Binding ThemeModeIndex, Mode=TwoWay}">
+                    <ComboBoxItem Content="Auto (System)"/>
+                    <ComboBoxItem Content="Light"/>
+                    <ComboBoxItem Content="Dark"/>
+                </ComboBox>
+
+                <TextBlock Text="{Binding LabelBackdrop}" Grid.Row="1" Grid.Column="0" FontSize="15" VerticalAlignment="Center"/>
+                <ComboBox Grid.Row="1" Grid.Column="1" x:Name="BackdropCombo"
+                          SelectedIndex="{Binding BackdropIndex, Mode=TwoWay}">
+                    <ComboBoxItem Content="Mica"/>
+                    <ComboBoxItem Content="Mica Alt"/>
+                    <ComboBoxItem Content="Acrylic"/>
+                </ComboBox>
+
+                <TextBlock Text="{Binding LabelLayout}" Grid.Row="2" Grid.Column="0" FontSize="15" VerticalAlignment="Center"/>
+                <ComboBox Grid.Row="2" Grid.Column="1" x:Name="LayoutCombo"
+                          SelectedIndex="{Binding LayoutIndex, Mode=TwoWay}">
+                    <ComboBoxItem Content="Horizontal"/>
+                    <ComboBoxItem Content="Vertical"/>
+                </ComboBox>
+
+                <TextBlock Text="{Binding LabelLanguage}" Grid.Row="3" Grid.Column="0" FontSize="15" VerticalAlignment="Center"/>
+                <ComboBox Grid.Row="3" Grid.Column="1" x:Name="LangCombo"
+                          SelectedIndex="{Binding LangIndex, Mode=TwoWay}">
+                    <ComboBoxItem Content="中文"/>
+                    <ComboBoxItem Content="English"/>
+                </ComboBox>
+            </Grid>
+
+            <Border Height="1" Background="{ThemeResource CardBackgroundFillColorSecondary}" Margin="0,4"/>
+
+            <!-- Logs -->
+            <Button x:Name="OpenLogsBtn"
+                    Content="{Binding LabelOpenLogs}"
+                    Click="OnOpenLogs"
+                    HorizontalAlignment="Stretch"
+                    Height="40"
+                    Margin="0,8,0,0"/>
+        </StackPanel>
+    </ScrollViewer>
+</Window>
