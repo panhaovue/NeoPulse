@@ -1,4 +1,4 @@
-# Monitor
+# NeoPulse
 
 > [中文版 README](README_zh.md)
 
